@@ -1,10 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
-import { getDsProduct, buildAuthUrl, exchangeCodeForToken } from './aliexpress.js';
+import { getDsProduct, buildAuthUrl, exchangeCodeForToken, extractProductId } from './aliexpress.js';
 import { toSquareCatalog, upsertCatalog } from './square.js';
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 const ali = { appKey: process.env.ALIEXPRESS_APP_KEY, appSecret: process.env.ALIEXPRESS_APP_SECRET,
   accessToken: process.env.ALIEXPRESS_ACCESS_TOKEN, host: process.env.ALIEXPRESS_API_HOST || 'api-sg.aliexpress.com' };
 const sq = { token: process.env.SQUARE_ACCESS_TOKEN, environment: process.env.SQUARE_ENVIRONMENT || 'sandbox' };
@@ -34,15 +35,41 @@ app.get('/auth/aliexpress/callback', async (req, res) => {
   } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
+async function syncProduct(productInput, markupInput) {
+  const productId = extractProductId(productInput);
+  const raw = await getDsProduct(productId, ali);
+  const catalogObj = toSquareCatalog(raw, {
+    markup: Number(markupInput || process.env.PRICE_MARKUP || 1.8),
+    round99: process.env.ROUND_TO_99 === 'true', locationId: process.env.SQUARE_LOCATION_ID,
+  });
+  const square = await upsertCatalog(catalogObj, sq);
+  return { productId, square };
+}
+
 app.post('/sync/product', async (req, res) => {
+  try { res.json(await syncProduct(req.body.product_id, req.body.markup)); }
+  catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+});
+
+// ---- Simple import page (for Alexia, no code needed) ----
+const page = (inner) => `<!doctype html><html><head><meta charset="utf-8"><title>RR Drop Ship - Import</title>
+<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px}input{width:100%;padding:10px;margin:6px 0 14px}button{padding:10px 18px;font-size:16px}.ok{background:#e6f7e6;padding:12px}.err{background:#fdecec;padding:12px}</style></head><body>
+<h1>Retail Resurrection - Import from AliExpress</h1>${inner}</body></html>`;
+const form = `<form method="POST" action="/import">
+<label>AliExpress product link (or product ID)<input name="product" required placeholder="https://www.aliexpress.com/item/...html"></label>
+<label>Markup (optional, e.g. 1.8 = cost x 1.8)<input name="markup" placeholder="1.8"></label>
+<button type="submit">Import into Square</button></form>
+<p>The item lands in Square under your Retail Resurrection location, inventory tracking off, ready to sell. AliExpress fulfills it when it sells.</p>`;
+
+app.get('/', (_req, res) => res.send(page(form)));
+app.post('/import', async (req, res) => {
   try {
-    const raw = await getDsProduct(req.body.product_id, ali);
-    const catalogObj = toSquareCatalog(raw, {
-      markup: Number(req.body.markup || process.env.PRICE_MARKUP || 1.8),
-      round99: process.env.ROUND_TO_99 === 'true', locationId: process.env.SQUARE_LOCATION_ID,
-    });
-    res.json({ aliexpress: raw, square: await upsertCatalog(catalogObj, sq) });
-  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+    const { productId, square } = await syncProduct(req.body.product, req.body.markup);
+    const obj = square.catalog_object;
+    res.send(page(`<div class="ok"><b>Imported!</b> AliExpress product ${productId} is now in Square as item <b>${obj?.id || ''}</b> (${obj?.item_data?.name || ''}).</div>` + form));
+  } catch (e) {
+    res.send(page(`<div class="err"><b>Import didn't finish:</b> ${String(e.message || e)}</div>` + form));
+  }
 });
 
 app.post('/webhooks/square', (req, res) => {
