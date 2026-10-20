@@ -6,19 +6,29 @@ export function sign(params, appSecret) {
   return crypto.createHmac('sha256', appSecret).update(sorted).digest('hex').toUpperCase();
 }
 
-export async function callAliExpress(method, extra, { appKey, appSecret, accessToken, host }) {
-  const params = {
-    method, app_key: appKey, timestamp: String(Date.now()),
-    format: 'json', v: '2.0', sign_method: 'sha256', ...extra,
-  };
+// Business APIs on the new platform are IOP REST calls:
+//   POST https://api-sg.aliexpress.com/rest/<method with dots as slashes>
+// signed exactly like the auth calls (see iopSign below). `session` carries
+// the access token. (An older TOP-style /sync variant is kept out on
+// purpose — the legacy platform does not know this app.)
+export function buildIopRequest(method, extra, { appKey, appSecret, accessToken }) {
+  const apiPath = '/' + method.replace(/\./g, '/');
+  const params = { app_key: appKey, timestamp: String(Date.now()), sign_method: 'sha256', ...extra };
   if (accessToken) params.session = accessToken;
-  params.sign = sign(params, appSecret);
-  const res = await fetch(`https://${host}/sync`, {
+  params.sign = iopSign(apiPath, params, appSecret);
+  return { url: `https://api-sg.aliexpress.com/rest${apiPath}`, params };
+}
+
+export async function callAliExpress(method, extra, cfg) {
+  const { url, params } = buildIopRequest(method, extra, cfg);
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params),
   });
-  return res.json();
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { throw new Error(`AliExpress ${method} returned HTTP ${res.status} with non-JSON body: ${text.slice(0, 200)}`); }
 }
 
 // Accept a full AliExpress product URL (any slug/query form) or a bare
@@ -64,12 +74,17 @@ async function iopAuthCall(apiPath, bizParams, { appKey, appSecret }) {
   const sys = { app_key: appKey, timestamp: String(Date.now()), sign_method: 'sha256' };
   const all = { ...sys, ...bizParams };
   const sign = iopSign(apiPath, all, appSecret);
-  const res = await fetch(`https://api-sg.aliexpress.com${apiPath}`, {
+  // Gateway is /rest + apiPath, but the SIGNATURE is computed over apiPath
+  // alone (both facts verified live 2026-10-20: wrong combo returns
+  // IncompleteSignature; right combo reaches the business error InvalidCode).
+  const res = await fetch(`https://api-sg.aliexpress.com/rest${apiPath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ ...all, sign }),
   });
-  return res.json();
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { throw new Error(`AliExpress ${apiPath} returned HTTP ${res.status} with non-JSON body: ${text.slice(0, 200)}`); }
 }
 
 export const exchangeCodeForToken = (code, cfg) =>

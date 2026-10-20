@@ -59,8 +59,12 @@ export function parseSkus(p) {
 // creating a duplicate name. `existingOptions` = the account's current
 // ITEM_OPTION catalog objects; existing options/values are REUSED by name,
 // and an update object (with version) appends any missing values instead.
+export const unwrapDsProduct = (dsProduct) =>
+  dsProduct?.aliexpress_ds_product_get_response?.result || dsProduct?.result ||
+  (dsProduct?.product_title ? dsProduct : null);
+
 export function toSquareVariantBatch(dsProduct, { markup = 1.8, round99 = true, locationId }, existingOptions = []) {
-  const p = dsProduct?.aliexpress_ds_product_get_response?.result;
+  const p = unwrapDsProduct(dsProduct);
   if (!p) throw new Error('Unexpected AliExpress product shape — check raw response first');
   const skus = parseSkus(p);
   if (!skus.length) return null;
@@ -163,7 +167,7 @@ export function toSquareVariantBatch(dsProduct, { markup = 1.8, round99 = true, 
 
 // Simple fallback: single-variation item for products without SKUs
 export function toSquareCatalog(dsProduct, { markup = 1.8, round99 = true, locationId }) {
-  const p = dsProduct?.aliexpress_ds_product_get_response?.result;
+  const p = unwrapDsProduct(dsProduct);
   if (!p) throw new Error('Unexpected AliExpress product shape — check raw response first');
   const cents = priceCents(p.target_sale_price || p.target_original_price || 0, markup, round99);
   return {
