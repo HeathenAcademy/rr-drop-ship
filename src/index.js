@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { getDsProduct } from './aliexpress.js';
+import { getDsProduct, buildAuthUrl, exchangeCodeForToken } from './aliexpress.js';
 import { toSquareCatalog, upsertCatalog } from './square.js';
 
 const app = express();
@@ -11,11 +11,27 @@ const sq = { token: process.env.SQUARE_ACCESS_TOKEN, environment: process.env.SQ
 
 app.get('/health', (_req, res) => res.json({ ok: true, app: 'RR Drop Ship' }));
 
+const callbackUri = () => `${process.env.PUBLIC_BASE_URL}/auth/aliexpress/callback`;
+
+// Visit this to START AliExpress authorization (app sends you to AliExpress)
+app.get('/auth/aliexpress/start', (_req, res) => {
+  res.redirect(buildAuthUrl({ appKey: ali.appKey, redirectUri: callbackUri() }));
+});
+
 // Put this full URL in the AliExpress portal as the Callback URL
-app.get('/auth/aliexpress/callback', (req, res) => {
-  // AliExpress returns a code here; exchange it for an access token, store securely.
-  console.log('AliExpress callback:', req.query);
-  res.send('RR Drop Ship: authorization received. You can close this tab.');
+app.get('/auth/aliexpress/callback', async (req, res) => {
+  try {
+    if (req.query.error) return res.status(400).send(`AliExpress returned: ${req.query.error}`);
+    if (!req.query.code) return res.status(400).send('No code in callback');
+    const token = await exchangeCodeForToken(req.query.code, {
+      appKey: ali.appKey, appSecret: ali.appSecret, redirectUri: callbackUri(),
+    });
+    if (!token.access_token) return res.status(502).json({ error: 'Token exchange failed', aliexpress: token });
+    // Setup phase: display the token JSON once to the authorizing browser
+    // so it can be saved into this service's ALIEXPRESS_ACCESS_TOKEN env
+    // var on Render. Long-term the token should be stored in a DB instead.
+    res.json({ ok: true, message: 'Authorization succeeded', ...token });
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
 app.post('/sync/product', async (req, res) => {
