@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: rr-drop-ship
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SQUARE_ENVIRONMENT
+        value: production
+      - key: PRICE_MARKUP
+        value: "1.8"
+      - key: ROUND_TO_99
+        value: "true"
+      # Secrets (ALIEXPRESS_APP_KEY, ALIEXPRESS_APP_SECRET,
+      # ALIEXPRESS_ACCESS_TOKEN, SQUARE_ACCESS_TOKEN, SQUARE_LOCATION_ID)
+      # are set in the Render dashboard, never in this file.
