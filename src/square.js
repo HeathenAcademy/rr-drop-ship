@@ -31,6 +31,9 @@ export function toSquareCatalog(dsProduct, { markup = 1.8, round99 = true, locat
         description: p.product_detail_url || '',
         variations: [{
           type: 'ITEM_VARIATION', id: '#rr-var',
+          // Variation must carry the same location presence as the item,
+          // or Square rejects the upsert (verified by live test 2026-10-20).
+          present_at_all_locations: false, present_at_location_ids: [locationId],
           item_variation_data: {
             item_id: '#rr-item', name: 'Regular', pricing_type: 'FIXED_PRICING',
             price_money: { amount: cents, currency: 'USD' },
