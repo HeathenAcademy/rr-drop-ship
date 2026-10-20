@@ -21,6 +21,16 @@ export async function callAliExpress(method, extra, { appKey, appSecret, accessT
   return res.json();
 }
 
+// Accept a full AliExpress product URL (any slug/query form) or a bare
+// numeric product ID, and return just the ID. Throws on anything else.
+export function extractProductId(input) {
+  const s = String(input || '').trim();
+  if (/^\d{6,}$/.test(s)) return s;
+  const patterns = [/\/item\/(?:[^/]+\/)?(\d{6,})\.html/, /[?&](?:product_?id|productId)=(\d{6,})/i, /\/item\/(\d{6,})/];
+  for (const re of patterns) { const m = s.match(re); if (m) return m[1]; }
+  throw new Error('Could not find an AliExpress product ID in that - paste the product link or the numeric ID');
+}
+
 export const getDsProduct = (productId, opts) =>
   callAliExpress('aliexpress.ds.product.get', { product_id: productId }, opts);
 
