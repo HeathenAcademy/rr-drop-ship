@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { getDsProduct, buildAuthUrl, exchangeCodeForToken, extractProductId } from './aliexpress.js';
-import { toSquareCatalog, upsertCatalog } from './square.js';
+import { toSquareCatalog, upsertCatalog, syncVariantProduct } from './square.js';
 
 const app = express();
 app.use(express.json());
@@ -38,11 +38,15 @@ app.get('/auth/aliexpress/callback', async (req, res) => {
 async function syncProduct(productInput, markupInput) {
   const productId = extractProductId(productInput);
   const raw = await getDsProduct(productId, ali);
-  const catalogObj = toSquareCatalog(raw, {
+  const opts = {
     markup: Number(markupInput || process.env.PRICE_MARKUP || 1.8),
     round99: process.env.ROUND_TO_99 === 'true', locationId: process.env.SQUARE_LOCATION_ID,
-  });
-  const square = await upsertCatalog(catalogObj, sq);
+  };
+  // Products with SKUs (clothes: sizes/colors) go in as structured
+  // options + one variation per SKU, each with its own AliExpress price.
+  const variantResult = await syncVariantProduct(raw, opts, sq);
+  if (variantResult) return { productId, variants: variantResult.variants, square: variantResult.square };
+  const square = await upsertCatalog(toSquareCatalog(raw, opts), sq);
   return { productId, square };
 }
 
@@ -64,9 +68,10 @@ const form = `<form method="POST" action="/import">
 app.get('/', (_req, res) => res.send(page(form)));
 app.post('/import', async (req, res) => {
   try {
-    const { productId, square } = await syncProduct(req.body.product, req.body.markup);
-    const obj = square.catalog_object;
-    res.send(page(`<div class="ok"><b>Imported!</b> AliExpress product ${productId} is now in Square as item <b>${obj?.id || ''}</b> (${obj?.item_data?.name || ''}).</div>` + form));
+    const { productId, square, variants } = await syncProduct(req.body.product, req.body.markup);
+    const obj = square.catalog_object || (square.objects || []).find(o => o.type === 'ITEM');
+    const varTxt = variants ? ` with ${variants.length} variants (${variants.map(v => `${v.name} $${(v.price_cents / 100).toFixed(2)}, AliExpress stock ${v.stock}`).join('; ')})` : '';
+    res.send(page(`<div class="ok"><b>Imported!</b> AliExpress product ${productId} is now in Square as item <b>${obj?.id || ''}</b> (${obj?.item_data?.name || ''})${varTxt}.</div>` + form));
   } catch (e) {
     res.send(page(`<div class="err"><b>Import didn't finish:</b> ${String(e.message || e)}</div>` + form));
   }
