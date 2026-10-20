@@ -12,6 +12,13 @@ const sq = { token: process.env.SQUARE_ACCESS_TOKEN, environment: process.env.SQ
 
 app.get('/health', (_req, res) => res.json({ ok: true, app: 'RR Drop Ship' }));
 
+// Forgive stray spaces in URLs (a copied link added "%20" before "start"
+// once and produced Cannot GET). Redirect to the cleaned path.
+app.use((req, res, next) => {
+  if (req.path.includes(' ')) return res.redirect(req.path.replace(/ /g, ''));
+  next();
+});
+
 const callbackUri = () => `${process.env.PUBLIC_BASE_URL}/auth/aliexpress/callback`;
 
 // Visit this to START AliExpress authorization (app sends you to AliExpress)
