@@ -37,23 +37,42 @@ export const getDsProduct = (productId, opts) =>
 // OAuth: our app sends the account owner to AliExpress to authorize.
 // AliExpress redirects back to our callback with ?code=..., which the
 // server exchanges for an access_token + refresh_token.
+//
+// PLATFORM NOTE (verified from her portal docs 2026-10-20): this app lives
+// on the NEW AliExpress open platform. The authorize page is on
+// api-sg.aliexpress.com — the legacy oauth.aliexpress.com host answers
+// "param-appkey not exists" for new-platform apps. Token exchange is a
+// SIGNED IOP call to /auth/token/create (refresh: /auth/token/refresh),
+// not the legacy /token form post.
 export function buildAuthUrl({ appKey, redirectUri }) {
-  const u = new URL('https://oauth.aliexpress.com/authorize');
+  const u = new URL('https://api-sg.aliexpress.com/oauth/authorize');
   u.search = new URLSearchParams({
     response_type: 'code', force_auth: 'true',
-    redirect_uri: redirectUri, client_id: appKey, sp: 'ae',
+    redirect_uri: redirectUri, client_id: appKey,
   });
   return u.toString();
 }
 
-export async function exchangeCodeForToken(code, { appKey, appSecret, redirectUri }) {
-  const res = await fetch('https://oauth.aliexpress.com/token', {
+// IOP signing: sort params, prepend the API path, HMAC-SHA256, uppercase hex.
+export function iopSign(apiPath, params, secret) {
+  const keys = Object.keys(params).filter(k => k !== 'sign' && params[k] !== undefined && params[k] !== '').sort();
+  const str = apiPath + keys.map(k => `${k}${params[k]}`).join('');
+  return crypto.createHmac('sha256', secret).update(str).digest('hex').toUpperCase();
+}
+
+async function iopAuthCall(apiPath, bizParams, { appKey, appSecret }) {
+  const sys = { app_key: appKey, timestamp: String(Date.now()), sign_method: 'sha256' };
+  const all = { ...sys, ...bizParams };
+  const sign = iopSign(apiPath, all, appSecret);
+  const res = await fetch(`https://api-sg.aliexpress.com${apiPath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code', code,
-      client_id: appKey, client_secret: appSecret, redirect_uri: redirectUri,
-    }),
+    body: new URLSearchParams({ ...all, sign }),
   });
   return res.json();
 }
+
+export const exchangeCodeForToken = (code, cfg) =>
+  iopAuthCall('/auth/token/create', { code }, cfg);
+export const refreshAccessToken = (refreshToken, cfg) =>
+  iopAuthCall('/auth/token/refresh', { refresh_token: refreshToken }, cfg);
