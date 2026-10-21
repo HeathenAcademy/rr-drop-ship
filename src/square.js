@@ -59,15 +59,45 @@ export function parseSkus(p) {
 // creating a duplicate name. `existingOptions` = the account's current
 // ITEM_OPTION catalog objects; existing options/values are REUSED by name,
 // and an update object (with version) appends any missing values instead.
-export const unwrapDsProduct = (dsProduct) =>
-  dsProduct?.aliexpress_ds_product_get_response?.result || dsProduct?.result ||
-  (dsProduct?.product_title ? dsProduct : null);
+// Normalize every known DS product shape into ONE internal shape:
+// - classic: result.product_title / result.aeop_ae_product_skus...
+// - DTO style (what the live API actually returned 2026-10-20):
+//   result.ae_item_base_info_dto.subject,
+//   result.ae_item_sku_info_dtos.ae_item_sku_info_d_t_o[] with
+//   ae_sku_property_dtos.ae_sku_property_d_t_o[]
+export function unwrapDsProduct(dsProduct) {
+  const r = dsProduct?.aliexpress_ds_product_get_response?.result || dsProduct?.result ||
+    (dsProduct?.product_title || dsProduct?.ae_item_base_info_dto ? dsProduct : null);
+  if (!r) return null;
+  if (r.ae_item_base_info_dto) {
+    const base = r.ae_item_base_info_dto;
+    const dtoSkus = r.ae_item_sku_info_dtos?.ae_item_sku_info_d_t_o || [];
+    return {
+      product_title: base.subject,
+      product_detail_url: base.detail_url || '',
+      target_sale_price: dtoSkus[0]?.offer_sale_price || dtoSkus[0]?.sku_price || '0',
+      aeop_ae_product_skus: { ae_product_sku: dtoSkus.map(s => ({
+        id: s.sku_id,
+        offer_sale_price: s.offer_sale_price || s.sku_price,
+        sku_available_stock: s.sku_available_stock,
+        aeop_sku_property_list: { ae_sku_property:
+          (s.ae_sku_property_dtos?.ae_sku_property_d_t_o || []).map(pr => ({
+            sku_property_name: pr.sku_property_name,
+            sku_property_value: pr.sku_property_value,
+            sku_image: pr.sku_image || null,
+          })) },
+      })) },
+    };
+  }
+  return r;
+}
 
 export function toSquareVariantBatch(dsProduct, { markup = 1.8, round99 = true, locationId }, existingOptions = []) {
   const p = unwrapDsProduct(dsProduct);
   if (!p) throw new Error('Unexpected AliExpress product shape — check raw response first');
   const skus = parseSkus(p);
   if (!skus.length) return null;
+  if (!p.product_title || skus.every(s => !(s.cost > 0))) throw new Error('AliExpress product has no title or no priced SKUs — refusing to import a blank item');
 
   const existingByName = new Map();
   for (const o of existingOptions || []) {
@@ -169,6 +199,8 @@ export function toSquareVariantBatch(dsProduct, { markup = 1.8, round99 = true, 
 export function toSquareCatalog(dsProduct, { markup = 1.8, round99 = true, locationId }) {
   const p = unwrapDsProduct(dsProduct);
   if (!p) throw new Error('Unexpected AliExpress product shape — check raw response first');
+  if (!p.product_title || !(Number(p.target_sale_price || p.target_original_price || 0) > 0))
+    throw new Error('AliExpress product has no title or no price — refusing to import a blank item');
   const cents = priceCents(p.target_sale_price || p.target_original_price || 0, markup, round99);
   return {
     idempotency_key: crypto.randomUUID(),
