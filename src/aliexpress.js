@@ -6,21 +6,24 @@ export function sign(params, appSecret) {
   return crypto.createHmac('sha256', appSecret).update(sorted).digest('hex').toUpperCase();
 }
 
-// Business APIs on the new platform are IOP REST calls:
-//   POST https://api-sg.aliexpress.com/rest/<method with dots as slashes>
-// signed exactly like the auth calls (see iopSign below). `session` carries
-// the access token. (An older TOP-style /sync variant is kept out on
-// purpose — the legacy platform does not know this app.)
-export function buildIopRequest(method, extra, { appKey, appSecret, accessToken }) {
-  const apiPath = '/' + method.replace(/\./g, '/');
-  const params = { app_key: appKey, timestamp: String(Date.now()), sign_method: 'sha256', ...extra };
+// Business APIs use a DIFFERENT gateway than auth on this platform
+// (all verified live 2026-10-20 with a real token):
+//   POST https://api-sg.aliexpress.com/sync?method=<method>
+// with TOP-style signing (sorted key+value concat, see sign() above) and
+// the access token in `session`. The /rest/<method-as-path> form returns
+// InvalidApiPath; the oauth.aliexpress.com host doesn't know this app.
+export function buildSyncRequest(method, extra, { appKey, appSecret, accessToken }) {
+  const params = {
+    method, app_key: appKey, timestamp: String(Date.now()),
+    format: 'json', v: '2.0', sign_method: 'sha256', ...extra,
+  };
   if (accessToken) params.session = accessToken;
-  params.sign = iopSign(apiPath, params, appSecret);
-  return { url: `https://api-sg.aliexpress.com/rest${apiPath}`, params };
+  params.sign = sign(params, appSecret);
+  return { url: 'https://api-sg.aliexpress.com/sync', params };
 }
 
 export async function callAliExpress(method, extra, cfg) {
-  const { url, params } = buildIopRequest(method, extra, cfg);
+  const { url, params } = buildSyncRequest(method, extra, cfg);
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -41,8 +44,11 @@ export function extractProductId(input) {
   throw new Error('Could not find an AliExpress product ID in that - paste the product link or the numeric ID');
 }
 
+// ship_to_country is MANDATORY for ds.product.get (learned live); prices
+// and stock come back localized to that destination. Default US.
 export const getDsProduct = (productId, opts) =>
-  callAliExpress('aliexpress.ds.product.get', { product_id: productId }, opts);
+  callAliExpress('aliexpress.ds.product.get',
+    { product_id: productId, ship_to_country: opts?.shipToCountry || 'US' }, opts);
 
 // OAuth: our app sends the account owner to AliExpress to authorize.
 // AliExpress redirects back to our callback with ?code=..., which the
