@@ -2,12 +2,15 @@ import 'dotenv/config';
 import express from 'express';
 import { getDsProduct, buildAuthUrl, exchangeCodeForToken, extractProductId } from './aliexpress.js';
 import { toSquareCatalog, upsertCatalog, syncVariantProduct } from './square.js';
+import { getValidAccessToken, saveTokens, tokensFromResponse, tokenStatus } from './tokens.js';
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 const ali = { appKey: process.env.ALIEXPRESS_APP_KEY, appSecret: process.env.ALIEXPRESS_APP_SECRET,
-  accessToken: process.env.ALIEXPRESS_ACCESS_TOKEN, host: process.env.ALIEXPRESS_API_HOST || 'api-sg.aliexpress.com' };
+  host: process.env.ALIEXPRESS_API_HOST || 'api-sg.aliexpress.com' };
+// Access tokens come from the auto-refreshing token store (src/tokens.js),
+// seeded by the ALIEXPRESS_ACCESS_TOKEN / ALIEXPRESS_REFRESH_TOKEN env vars.
 const sq = { token: process.env.SQUARE_ACCESS_TOKEN, environment: process.env.SQUARE_ENVIRONMENT || 'sandbox' };
 
 app.get('/health', (_req, res) => res.json({ ok: true, app: 'RR Drop Ship' }));
@@ -35,16 +38,27 @@ app.get('/auth/aliexpress/callback', async (req, res) => {
       appKey: ali.appKey, appSecret: ali.appSecret, redirectUri: callbackUri(),
     });
     if (!token.access_token) return res.status(502).json({ error: 'Token exchange failed', aliexpress: token });
-    // Setup phase: display the token JSON once to the authorizing browser
-    // so it can be saved into this service's ALIEXPRESS_ACCESS_TOKEN env
-    // var on Render. Long-term the token should be stored in a DB instead.
-    res.json({ ok: true, message: 'Authorization succeeded', ...token });
+    // Tokens now persist into the auto-refresh store; the browser only
+    // gets a summary (no raw token values on screen anymore).
+    await saveTokens(tokensFromResponse(token));
+    res.json({ ok: true, message: 'Authorization succeeded', account: token.account,
+      access_expires_at: new Date(token.expire_time || 0).toISOString(),
+      refresh_expires_at: new Date(token.refresh_token_valid_time || 0).toISOString() });
   } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
+// Token health for monitoring: is the app authorized, when do tokens lapse
+app.get('/auth/status', async (_req, res) => res.json(await tokenStatus()));
+
+// Background auto-refresh: check every 20 minutes; refreshes early
+// (1h skew) and rotates both tokens before they can lapse.
+setInterval(() => { getValidAccessToken(ali).catch(() => {}); }, 20 * 60 * 1000).unref();
+setTimeout(() => { getValidAccessToken(ali).catch(() => {}); }, 5000).unref(); // once at boot
+
 async function syncProduct(productInput, markupInput) {
   const productId = extractProductId(productInput);
-  const raw = await getDsProduct(productId, ali);
+  const accessToken = await getValidAccessToken(ali);
+  const raw = await getDsProduct(productId, { ...ali, accessToken });
   const wrap = raw?.aliexpress_ds_product_get_response;
   if (!wrap) throw new Error(`AliExpress returned no product wrapper: ${JSON.stringify(raw).slice(0, 300)}`);
   if (wrap.rsp_code && Number(wrap.rsp_code) !== 200) throw new Error(`AliExpress rsp ${wrap.rsp_code}: ${wrap.rsp_msg || ''}`);
