@@ -45,6 +45,9 @@ app.get('/auth/aliexpress/callback', async (req, res) => {
 async function syncProduct(productInput, markupInput) {
   const productId = extractProductId(productInput);
   const raw = await getDsProduct(productId, ali);
+  const wrap = raw?.aliexpress_ds_product_get_response;
+  if (!wrap) throw new Error(`AliExpress returned no product wrapper: ${JSON.stringify(raw).slice(0, 300)}`);
+  if (wrap.rsp_code && Number(wrap.rsp_code) !== 200) throw new Error(`AliExpress rsp ${wrap.rsp_code}: ${wrap.rsp_msg || ''}`);
   const opts = {
     markup: Number(markupInput || process.env.PRICE_MARKUP || 1.8),
     round99: process.env.ROUND_TO_99 === 'true', locationId: process.env.SQUARE_LOCATION_ID,
