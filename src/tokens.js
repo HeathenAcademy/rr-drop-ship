@@ -56,7 +56,13 @@ export const tokensFromResponse = (tok) => ({
 
 export async function getValidAccessToken(cfg, { now = Date.now(), refreshFn = refreshAccessToken, skewMs = 3600_000 } = {}) {
   const t = await loadTokens();
-  if (t.accessToken && t.accessExpiresAt - now > skewMs) return t.accessToken;
+  const accessFresh = t.accessToken && t.accessExpiresAt - now > skewMs;
+  // Also refresh while the REFRESH token is in its last day even when the
+  // access token still looks fresh: the first post-authorization refresh
+  // returned a long-lived (30-day) access token but kept the ORIGINAL
+  // 48h refresh deadline. Rolling early is how the chain stays alive.
+  const refreshUrgent = t.refreshExpiresAt && t.refreshExpiresAt - now <= 24 * 3600_000;
+  if (accessFresh && !refreshUrgent) return t.accessToken;
   if (!t.refreshToken) return t.accessToken; // nothing to refresh with
   if (t.refreshExpiresAt && t.refreshExpiresAt <= now) return t.accessToken; // refresh lapsed; caller will surface the API error
   if (!refreshing) {
